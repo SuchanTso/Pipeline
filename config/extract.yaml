@@ -1,0 +1,31 @@
+# 节点数据提取配置文件
+
+# 表A设置 - 完整节点数据
+table_whole:
+  path: "data/whole_Haishu.xlsx"  # 完整节点数据表路径
+  id_column: "node_id"              # 节点ID列名
+  # 需要提取的属性列（可以根据需要添加或移除）
+  extract_attributes:
+    - "X（m）"
+    - "Y（m）"
+    - "节点类型"
+    - "last_modified"
+    - "owner"
+    - "status"
+    - "priority"
+    - "description"
+  
+# 表B设置 - 要提取的节点ID列表
+table_part:
+  path: "data/Part_Shiqi.xlsx"  # ID列表表路径
+  has_header: true                 # 文件是否包含表头(true/false)
+  
+# 输出设置
+output:
+  path: "results/extracted_nodes.xlsx"  # 结果输出路径
+  log_path: "logs/extraction_log.txt" # 日志文件路径
+
+# 其他设置
+settings:
+  chunk_size: 5000                 # 处理大文件的分块大小(行)
+  verbose: true                    # 是否显示详细日志(true/false)

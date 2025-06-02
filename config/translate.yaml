@@ -1,0 +1,38 @@
+# 表头映射 - 支持通过位置指定同名表头
+header_mapping:
+  # 一般列映射
+  "X（m）": "X(m)"
+  "Y（m）": "Y(m)"
+  "高程（m）": "high_elevation"
+  "多项扩张系数": "expansion_coefficient"
+  "高程备注": "elevation_note"
+  # 通过位置指定映射 (索引_表头名)
+  "3_节点类型": "node_epa"
+  "8_节点类型": "node_type_industry"
+  "10_节点类型": "node_type"
+  "上游节点": "upstream_node"
+  "到节点": "end_node"
+  "直径（mm）": "diameter(mm)"
+  "管壁厚度（mm）": "wall_thickness(mm)"
+  "内径（mm）": "inner_diameter(mm)"
+  "几何长度（m）": "geometric_length(m)"
+  "初始状态": "initial_state"
+  "粗糙度": "roughness"
+  "材质": "material"
+
+
+# 内容映射 - 支持通过原始列名或新列名指定
+content_mapping_files:
+  - column: "node_epa"
+    path: "data/predefine/node_epa.json"
+  - column: "node_type_industry"
+    path: "data/predefine/node_type_industry.json"
+    
+  - column: "node_type"
+    path: "data/predefine/node_type.json"
+
+  - column: "initial_state"
+    path: "data/predefine/initial_state.json"
+
+  - column: "material"
+    path: "data/predefine/material.json"
