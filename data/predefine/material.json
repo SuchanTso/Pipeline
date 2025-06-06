@@ -1,13 +1,13 @@
 {
-    "钢塑": 0,
-    "钢": 1,
-    "铸铁": 2,
-    "球墨": 3,
-    "塑料": 4,
-    "铸球": 5,
-    "砼": 6,
-    "PE": 7,
-    "水泥": 8,
-    "镀锌": 9,
-    "钢管": 10
+    "钢塑": "steel_plastic",
+    "钢": "steel",
+    "铸铁": "cast_iron",
+    "球墨": "ductile_iron",
+    "塑料": "plastic",
+    "铸球": "cast_ball",
+    "砼": "concrete",
+    "PE": "polyethylene",
+    "水泥": "cement",
+    "镀锌": "galvanized_steel",
+    "钢管": "steel_pipe"
 }

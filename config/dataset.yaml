@@ -1,0 +1,21 @@
+node_sheet_name: "Sheet1"
+pipe_sheet_name: "Sheet2"
+node_static_cols: 
+  - "X(m)"
+  - "Y(m)"
+  - "node_epa"
+  - "high_elevation"
+  - "node_type_industry"
+  - "gis_id"
+  - "node_type"
+pipe_static_cols:
+  - "diameter(mm)"
+  - "wall_thickness(mm)"
+  - "inner_diameter(mm)"
+  - "geometric_length(m)"
+  - "initial_state"
+  - "roughness"
+  - "material"
+
+node_time_start_point: 11
+pipe_time_start_point: 13

@@ -11,6 +11,7 @@ header_mapping:
   "8_节点类型": "node_type_industry"
   "10_节点类型": "node_type"
   "上游节点": "upstream_node"
+  "GIS ID": "gis_id"
   "到节点": "end_node"
   "直径（mm）": "diameter(mm)"
   "管壁厚度（mm）": "wall_thickness(mm)"
