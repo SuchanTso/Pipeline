@@ -19,7 +19,7 @@ sh data_translation.sh $2 $new_file
 exit_code=$?
 
 if [ $exit_code -eq 0 ]; then
-    python src/extract_nodes.py -p $1 -w $new_file -o $3
+    python src/dataset/extract_nodes.py -p $1 -w $new_file -o $3
 else
     echo "err ocurrs when translation."
     exit 1
