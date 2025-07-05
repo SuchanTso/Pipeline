@@ -50,27 +50,54 @@ class EpytHelper:
 
     def get_pipe_flows(self):
         return self.R.Flow  # 形状: (时间步, 管道数)
+    
+    def get_node_head(self):
+        return self.R.Head
 
 
-    def create_graph_data(self,timestep):
+    def create_graph_data(self,hrs , normalizer=None):
+        # TODO: normalize node features and edge features???
+        #TODO: is index right?
         # 获取当前时间步的数据
-        node_features = self.get_node_pressures()[timestep]  # 向量: [num_nodes]
-        edge_features = self.get_pipe_flows()[timestep]       # 向量: [num_edges]
-        
-        # 构建邻接表: 每个管道连接两个节点
-        edge_index = []
-        for pipe_id in self.G.getLinkIndex():
-            start_node , end_node = self.G.getLinkNodesIndex(pipe_id)# node index start from 1 so out of index
-            # print(f"{self.G.getLinkNameID(pipe_id)} :link node = {self.G.getNodeNameID([start_node, end_node])}")
-            # print(f"pipe_id = {pipe_id}, start_node = {start_node}, end_node = {end_node}")
-            edge_index.append([start_node - 1, end_node - 1])
-        edge_index = torch.tensor(edge_index, dtype=torch.long).T  # 形状: [2, num_edges]
-        
-        # 节点特征、边特征转为Tensor
-        x = torch.tensor(node_features, dtype=torch.float).unsqueeze(1)  # [num_nodes, 1]
-        edge_attr = torch.tensor(edge_features, dtype=torch.float).unsqueeze(1)  # [num_edges, 1]
-        
-        return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+        graph_data_list = []
+        print(f"node pressures shape = {self.get_node_pressures().shape}")
+        for timestep in range(hrs):
+            graph = Data()
+            node_features = self.get_node_pressures()[timestep]  # 向量: [num_nodes]
+            edge_features = self.get_pipe_flows()[timestep] 
+            node_head = self.get_node_head()[timestep] + self.G.getNodeElevations()  # 向量: [num_nodes]
+            edge_index = []
+            diameters = []
+            lengths = []
+            roughnesses = []
+            for pipe_id in self.G.getLinkIndex():
+                # pipe attributes
+                start_node , end_node = self.G.getLinkNodesIndex(pipe_id)# node index start from 1 so out of index
+                edge_index.append([start_node - 1, end_node - 1])
+                diameters.append(float(self.G.getLinkDiameter(pipe_id)))
+                lengths.append(float(self.G.getLinkLength(pipe_id)))
+                roughnesses.append(float(self.G.getLinkRoughnessCoeff(pipe_id)))
+            edge_index = torch.tensor(edge_index, dtype=torch.long).T  # 形状: [2, num_edges]
+            
+            reservoirIdx =self.G.getNodeReservoirIndex()  # 获取水库节点索引
+            # print(f"demands = {self.G.getNodeBaseDemands()[1]}")
+            reservoirType = [1 if i in reservoirIdx else 0 for i in range(self.G.getNodeCount())]  # [0,1] 0:非水库节点, 1:水库节点
+            graph.x = torch.stack((torch.tensor(node_head) , torch.tensor(self.G.getNodeBaseDemands()[1]) , torch.tensor(reservoirType) ) , dim=1).float()  # [num_nodes, 3]  # 节点特征: [扬程, 基础需求,水库类型] #, torch.tensor(self.G.getNodeCount()*[timestep])
+            graph.edge_index = edge_index  # [2, num_edges]
+            # print(f"node head = {self.G.getNodeHydraulicHead()}")
+            # print(f"node time head = {self.R.Head.shape}")
+            graph.edge_attr = torch.stack((torch.tensor(diameters, dtype=torch.float), torch.tensor(lengths, dtype=torch.float), torch.tensor(roughnesses, dtype=torch.float)) , dim=1) # [num_edges, 4]  # 边特征: [直径, 长度, 粗糙度] #, torch.tensor(self.G.getLinkCount()*[timestep]))
+            graph.y_node = torch.tensor(node_features, dtype=torch.float).reshape(-1,1)  # 节点压力特征: [num_nodes, 1]
+            graph.y_edge = torch.tensor(edge_features, dtype=torch.float).reshape(-1,1)  # 管道流量特征: [num_edges, 1]
+            
+            if normalizer is not None:
+                graph = normalizer.transform(graph)
+            graph_data_list.append(graph)
+        return graph_data_list
+    
+    def destroy(self):
+        """释放EPANET资源"""
+        self.G.unload()
 
 # 创建整个时间序列的数据集
 # graph_data_list = [create_graph_data(t) for t in range(x)]
@@ -78,13 +105,17 @@ class EpytHelper:
 
 
 class WaterEPANetDataset(Dataset):
-    def __init__(self, epa_net_path, hrs=72, transform=None):
+    def __init__(self, epa_net_path, hrs=72, normalizer=None):
         self.epa_net_path = epa_net_path
         self.hrs = hrs
-        self.transform = transform
         super(WaterEPANetDataset, self).__init__()
         self.epyt_helper = EpytHelper(epa_net_path, hrs)
-        self.data_list = [self.epyt_helper.create_graph_data(t) for t in range(hrs)]
+        self.data_list = self.epyt_helper.create_graph_data(hrs)
+        if normalizer is not None:
+            train , val , test = self.gen_train_loader(batch_size=32, shuffle=True)
+            normalizer.fit(train)
+            self.data_list = self.epyt_helper.create_graph_data(hrs, normalizer)
+        
 
     def __getitem__(self, idx):
         return self.data_list[idx]
@@ -96,6 +127,9 @@ class WaterEPANetDataset(Dataset):
         train_data, val_data, test_data = self.data_list[:int(0.8*self.hrs)], self.data_list[int(0.8*self.hrs):int(0.9*self.hrs)], self.data_list[int(0.9*self.hrs):]
         train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=shuffle)
         return train_loader, val_data, test_data
+    def __del__(self):
+        self.epyt_helper.destroy()
+        pass
     
 if __name__ == '__main__':
     dataset = WaterEPANetDataset('/data/zsc/Pipeline/data/epaNet/tt.inp', hrs=72)

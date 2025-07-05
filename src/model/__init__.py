@@ -1,1 +1,1 @@
-from .GNN import HydraulicGNN
+from .GNN import HydraulicGNN,GNN_ChebConv
