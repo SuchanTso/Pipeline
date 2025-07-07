@@ -1,0 +1,7 @@
+python src/dataset/netBrief.py -p "data/epaNet/data-water-epanet/Richmond_skeleton.inp"
+# python src/dataset/netBrief.py -p "data/epaNet/data-water-epanet/Richmond_skeleton(Vieira).inp"
+python src/dataset/netBrief.py -p "data/epaNet/data-water-epanet/Richmond.inp"
+python src/dataset/netBrief.py -p "data/epaNet/data-water-epanet/VanZyl.inp"
+python src/dataset/netBrief.py -p "data/epaNet/EPANET/example-networks/Net1.inp"
+python src/dataset/netBrief.py -p "data/epaNet/EPANET/example-networks/Net2.inp"
+python src/dataset/netBrief.py -p "data/epaNet/EPANET/example-networks/Net3.inp"

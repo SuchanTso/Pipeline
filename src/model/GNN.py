@@ -8,6 +8,8 @@ from torch_geometric.nn.inits import reset
 from typing import Union
 from torch import Tensor
 from torch.nn import Dropout
+from torch_geometric.utils import add_self_loops, degree
+
 
 class GraphEmbed(MessagePassing):
     def __init__(self, x_num, ea_num, emb_channels, aggr, dropout_rate=0):
@@ -89,48 +91,129 @@ class GNN_ChebConv(nn.Module):
         # print(f"output x.shape = {x.shape}")
         return x
 
-class HydraulicGNN(MessagePassing):
-    def __init__(self):
-        super().__init__(aggr='mean')  # 聚合函数: 均值/求和/最大值
-        # 节点更新MLP
-        self.node_mlp = Sequential(
-            Linear(7, 64),  # 输入: 自身特征 + 邻居聚合特征
-            ReLU(),
-            Linear(64, 1)   # 输出重建的节点压力
-        )
-        # 边更新MLP
-        self.edge_mlp = Sequential(
-            Linear(5, 64),  # 输入: 源节点、目标节点、原始边特征
-            ReLU(),
-            Linear(64, 1)   # 输出重建的管道流量
-        )
-    
-    def forward(self, data):
-        # 节点嵌入初始化
-        x = data.x
-        edge_index, edge_attr = data.edge_index, data.edge_attr
-        # print(f"edge_index: {edge_index}")
-        # 消息传递（两轮迭代）
-        for _ in range(2):
-            # 1. 更新边特征
-            edge_updates = self.edge_updater(edge_index, x=x, edge_attr=edge_attr)
-            # 2. 聚合邻居信息更新节点
-            x = self.propagate(edge_index, x=x, edge_attr=edge_updates)
+class GCNLayer(MessagePassing):
+    def __init__(self, in_channels, out_channels):
+        super(GCNLayer, self).__init__(aggr='add')  # 可选 mean / max / add
+        self.linear = torch.nn.Linear(in_channels, out_channels)
+
+    def forward(self, x, edge_index):
+        # x: [num_nodes, in_channels]
+        # edge_index: [2, num_edges]
         
-        return x, edge_updates
+        # Step 1: 加入自环
+        # print(f"edge_index.shape: {edge_index.shape} , num_nodes: {x.size(0)}")
+        edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
+        
+        # Step 2: 线性变换
+        x = self.linear(x)
+        
+        # Step 3: 归一化（D^-0.5 A D^-0.5）
+        row, col = edge_index
+        deg = degree(col, x.size(0), dtype=x.dtype)
+        deg_inv_sqrt = deg.pow(-0.5)
+        norm = deg_inv_sqrt[row] * deg_inv_sqrt[col]
+        
+        # Step 4: 触发消息传递（调用 message(), aggregate(), update()）
+        return self.propagate(edge_index, x=x, norm=norm)
+
+    def message(self, x_j, norm):
+        # x_j 是邻居节点发来的特征
+        return norm.view(-1, 1) * x_j
     
-    def edge_updater(self, edge_index, x, edge_attr):
-        # 拼接源节点、目标节点、原始边特征
-        src, dst = edge_index
-        edge_input = torch.cat([x[src], x[dst], edge_attr], dim=1)
-        # print(f"edge_input: {edge_input}")
-        return self.edge_mlp(edge_input)
+class TGCN_PyG(nn.Module):
+    def __init__(self, in_feats, gcn_hidden, gru_hidden, out_feats):
+        super(TGCN_PyG, self).__init__()
+        self.gcn = GCNLayer(in_feats, gcn_hidden)
+        self.gru = nn.GRU(input_size=gcn_hidden, hidden_size=gru_hidden, batch_first=True)
+        self.out_layer = nn.Linear(gru_hidden, out_feats)
+
+    def forward(self, x_seq, edge_index):
+        # x_seq: [T, N, F]
+        T, N, F = x_seq.shape
+        # print(f"x_seq.shape: {x_seq.shape}")
+        outputs = []
+
+
+        gcn_out_seq = []
+        for t in range(T):
+            x_t = x_seq[t]  # [N, F]
+            gcn_out = self.gcn(x_t, edge_index)  # [N, gcn_hidden]
+            gcn_out_seq.append(gcn_out)
+        gcn_out_seq = torch.stack(gcn_out_seq, dim=0)  # [T, N, gcn_hidden]
+        gcn_out_seq = gcn_out_seq.permute(1, 0, 2)  # [N, T, gcn_hidden]
+
+        node_outputs = []
+        for n in range(N):
+            node_seq = gcn_out_seq[n]  # [1, T, gcn_hidden]
+            _, h = self.gru(node_seq)               # h: [1, 1, gru_hidden]
+            node_outputs.append(self.out_layer(h))  # [1, out_feats]
+
+        outputs.append(torch.cat(node_outputs, dim=0))  # [N, out_feats]
+
+        return torch.stack(outputs, dim=0)[0]  # [N, out_feats]
     
-    def message(self, x_j, edge_attr):
-        # 消息 = 邻居节点特征 + 边特征
-        return torch.cat([x_j, edge_attr], dim=1)
-    
-    def update(self, aggr_out, x):
-        # 节点更新: 自身特征 + 聚合消息
-        node_input = torch.cat([x, aggr_out], dim=1)
-        return self.node_mlp(node_input)
+class TGCN_MessageCoupling(nn.Module):
+    def __init__(self, in_feats, gcn_hidden, gru_hidden, edge_hidden, out_node_feats=1, out_edge_feats=1):
+        super().__init__()
+        self.gcn = GCNLayer(in_feats, gcn_hidden)
+        self.gru = nn.GRU(input_size=gcn_hidden, hidden_size=gru_hidden, batch_first=True)
+
+        # 边流量预测器：输入 2 个节点嵌入 + 边属性 (含 masked_flow)
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(gru_hidden * 2 + 4, edge_hidden),  # 3个原始边属性 + 1个masked_flow
+            nn.ReLU(),
+            nn.Linear(edge_hidden, out_edge_feats)
+        )
+
+        # 节点压力预测器：节点嵌入 + 汇聚的边流量
+        self.pressure_mlp = nn.Sequential(
+            nn.Linear(gru_hidden + out_edge_feats, gru_hidden),
+            nn.ReLU(),
+            nn.Linear(gru_hidden, out_node_feats)
+        )
+
+    def forward(self, x_seq, edge_index, edge_attr):
+        """
+        x_seq: Tensor, shape [T, N, F]       # 节点时序输入
+        edge_index: LongTensor [2, E]         # 图结构
+        edge_attr: Tensor, shape [E, 4]       # 边属性 + masked_flow
+        """
+        T, N, F = x_seq.shape
+        device = x_seq.device
+
+        # Step 1: 每个时间步做 GCN
+        gcn_out_seq = []
+        for t in range(T):
+            x_t = x_seq[t]  # [N, F]
+            gcn_out = self.gcn(x_t, edge_index)  # [N, gcn_hidden]
+            gcn_out_seq.append(gcn_out)
+
+        # Step 2: 组装 [N, T, H] 输入 GRU
+        gcn_out_seq = torch.stack(gcn_out_seq, dim=0)  # [T, N, H]
+        gcn_out_seq = gcn_out_seq.permute(1, 0, 2)     # [N, T, H]
+
+        # Step 3: 每个节点过 GRU，得到最终表示
+        node_embed = []
+        for n in range(N):
+            node_seq = gcn_out_seq[n].unsqueeze(0)  # [1, T, H]
+            _, h = self.gru(node_seq)               # h: [1, 1, H]
+            h = h.squeeze(0).squeeze(0)             # [H]
+            node_embed.append(h)
+        node_embed = torch.stack(node_embed, dim=0)  # [N, H]
+
+        # Step 4: 边预测（根据 node_embed + edge_attr）
+        src, dst = edge_index[0], edge_index[1]  # [E]
+        src_feat = node_embed[src]  # [E, H]
+        dst_feat = node_embed[dst]  # [E, H]
+        edge_input = torch.cat([src_feat, dst_feat, edge_attr], dim=-1)  # [E, 2H + 4]
+        pred_edge = self.edge_mlp(edge_input)  # [E, 1]，预测边流量
+
+        # Step 5: 汇聚边流量到节点（反向 message passing）
+        node_flow_agg = torch.zeros((N, pred_edge.shape[-1]), device=device)  # [N, 1]
+        node_flow_agg = node_flow_agg.index_add(0, dst, pred_edge)  # sum of incoming flows
+
+        # Step 6: 节点压力预测（节点表示 + 边信息）
+        pressure_input = torch.cat([node_embed, node_flow_agg], dim=-1)  # [N, H + 1]
+        pred_node = self.pressure_mlp(pressure_input)  # [N, 1]，预测节点压力
+
+        return pred_node, pred_edge

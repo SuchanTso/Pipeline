@@ -1,1 +1,1 @@
-from .GNN import HydraulicGNN,GNN_ChebConv
+from .GNN import GNN_ChebConv , TGCN_PyG , TGCN_MessageCoupling

@@ -1,1 +1,1 @@
-python src/train/train.py -m model/GNN.pt -d data/epaNet/tt.inp -e 10000 -l 10 --hours_analysis 72
+python src/train/train.py -m model/GNN.pt -d data/epaNet/tt.inp -e 100 -l 10 --hours_analysis 72

@@ -46,7 +46,7 @@ class PowerLogTransformer(BaseEstimator,TransformerMixin):
                 return (X**self.power + self.min_)               
     
 class GraphNormalizer:
-    def __init__(self, x_feat_names=['elevation','base_demand','base_head'],
+    def __init__(self, x_feat_names=['elevation','base_demand'],
                  ea_feat_names=['diameter','length','roughness'], output='pressure'):        
         # store 
         self.x_feat_names = x_feat_names
@@ -84,7 +84,7 @@ class GraphNormalizer:
         ''' Transform graph based on normalizer
         '''
         graph = graph.clone()
-        for ix, feat in enumerate(self.x_feat_names):
+        for ix, feat in enumerate(self.x_feat_names):#TODO: do not normalize node_type
             temp = graph.x[:,ix].numpy().reshape(-1,1)
             graph.x[:,ix] = torch.tensor(self.scalers[feat].transform(temp).reshape(-1))
         for ix, feat in enumerate(self.ea_feat_names):
@@ -132,12 +132,34 @@ def from_graphs_to_pandas(graphs, l_x=3, l_ea=3):
         ea.append(graph.edge_attr.numpy())     
     return np.concatenate(x,axis=0),np.concatenate(y_pressure,axis=0) , np.concatenate(y_flow , axis=0),np.concatenate(ea,axis=0)
 
+class ZScoreNormalizer:
+    def __init__(self):
+        self.mean = None
+        self.std = None
+
+    def fit(self, data: torch.Tensor):
+        """
+        统计 mean 和 std（不改变输入）
+        data: [N, F] 或 [N, 1]
+        """
+        self.mean = data.mean(dim=0, keepdim=True)
+        self.std = data.std(dim=0, keepdim=True)
+        self.std[self.std == 0] = 1.0  # 防止除0
+
+    def transform(self, data: torch.Tensor):
+        return (data - self.mean) / self.std
+
+    def inverse_transform(self, norm_data: torch.Tensor):
+        return norm_data * self.std + self.mean
+
 
 if __name__ == '__main__':
     from epanet_helper import WaterEPANetDataset
     data_path = 'data/epaNet/tt.inp'
     hr = 72
-    normalizer = GraphNormalizer()
-    dataset = WaterEPANetDataset(data_path, hr , normalizer)
+    x_normalizer = ZScoreNormalizer()
+    y_node_normalizer = ZScoreNormalizer()
+    y_edge_normalizer = ZScoreNormalizer()
+    dataset = WaterEPANetDataset(data_path, hr , x_normalizer=x_normalizer,y_node_normalizer=y_node_normalizer,y_edge_normalizer=y_edge_normalizer,window_size=5)
     train_loader , val_loader , test_loader = dataset.gen_train_loader()
     print(f"First graph data: {dataset[0]}")
