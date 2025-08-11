@@ -132,26 +132,177 @@ def from_graphs_to_pandas(graphs, l_x=3, l_ea=3):
         ea.append(graph.edge_attr.numpy())     
     return np.concatenate(x,axis=0),np.concatenate(y_pressure,axis=0) , np.concatenate(y_flow , axis=0),np.concatenate(ea,axis=0)
 
+# class ZScoreNormalizer:
+#     def __init__(self):
+#         self.mean = None
+#         self.std = None
+
+#     def fit(self, data: torch.Tensor , mask_index=None):
+#         """
+#         统计 mean 和 std（不改变输入）
+#         data: [N, F] 或 [N, 1]
+#         """
+#         if mask_index is None:
+#             self.mean = data.mean(dim=0, keepdim=True)
+#             self.std = data.std(dim=0, keepdim=True)
+#         else:
+#             self.mean = data[~mask_index].mean(dim=0, keepdim=True)
+#             self.std = data[~mask_index].std(dim=0, keepdim=True)
+            
+#             pass
+#         self.std[self.std == 0] = 1.0  # 防止除0
+
+#     def transform(self, data: torch.Tensor):
+#         return (data - self.mean) / self.std
+
+#     def inverse_transform(self, norm_data: torch.Tensor):
+#         return norm_data * self.std + self.mean
+
+# 放入你的 normalizer.py
 class ZScoreNormalizer:
     def __init__(self):
-        self.mean = None
-        self.std = None
+        self.mean = 0.
+        self.std = 1.
 
     def fit(self, data: torch.Tensor):
         """
-        统计 mean 和 std（不改变输入）
-        data: [N, F] 或 [N, 1]
+        统计非零元素的均值和标准差。
+        data: 任意形状的张量，0被视作无效/mask值。
         """
-        self.mean = data.mean(dim=0, keepdim=True)
-        self.std = data.std(dim=0, keepdim=True)
-        self.std[self.std == 0] = 1.0  # 防止除0
+        # 找到所有非零元素
+        non_zero_elements = data[data != 0]
+        if non_zero_elements.numel() > 0:
+            self.mean = non_zero_elements.mean()
+            self.std = non_zero_elements.std()
+        
+        # 防止std为0
+        if self.std < 1e-8:
+            self.std = 1.0
+        print(f"ZScoreNormalizer: mean={self.mean}, std={self.std}")
 
     def transform(self, data: torch.Tensor):
-        return (data - self.mean) / self.std
+        """
+        只对非零元素进行归一化，0值保持为0。
+        """
+        # 复制数据以避免就地修改
+        norm_data = data.clone()
+        # 创建非零掩码
+        non_zero_mask = (data != 0)
+        # 应用归一化
+        norm_data[non_zero_mask] = (norm_data[non_zero_mask] - self.mean) / self.std
+        return norm_data
 
     def inverse_transform(self, norm_data: torch.Tensor):
-        return norm_data * self.std + self.mean
+        """
+        反归一化。同样，只对非零值操作。
+        """
+        # 复制数据以避免就地修改
+        inv_data = norm_data.clone()
+        non_zero_mask = (norm_data != 0)
+        inv_data[non_zero_mask] = (inv_data[non_zero_mask] * self.std) + self.mean
+        return inv_data
+    
+    def get_mean(self):
+        return self.mean
 
+class LogZScoreNormalizer:
+    """
+    一个组合了对数变换和Z-Score标准化的归一化器。
+    专门用于处理具有长尾分布（数值范围跨越多个数量级）的数据，如流量。
+    
+    处理流程:
+    1. Transform: x -> sign(x) * log(1 + |x|) -> (log_x - mean) / std
+    2. Inverse Transform: y -> (y * std + mean) -> sign(y_orig_log) * (exp(|y_orig_log|) - 1)
+    """
+    def __init__(self):
+        self.mean_log = 0.
+        self.std_log = 1.
+
+    def fit(self, data: torch.Tensor):
+        """
+        对数据的非零元素进行对数变换后，统计其均值和标准差。
+        
+        Args:
+            data (torch.Tensor): 任意形状的张量，0被视作无效/mask值。
+        """
+        # 找到所有非零元素
+        non_zero_elements = data[data != 0]
+        
+        if non_zero_elements.numel() > 0:
+            # Step 1: 对数变换
+            # 使用 sign(x) * log(1 + |x|) 来处理正负值
+            log_transformed_elements = torch.sign(non_zero_elements) * torch.log1p(torch.abs(non_zero_elements))
+            
+            # Step 2: 计算变换后数据的均值和标准差
+            self.mean_log = log_transformed_elements.mean()
+            self.std_log = log_transformed_elements.std()
+        
+        # 防止标准差为0（当所有值都相同时）
+        if self.std_log < 1e-8:
+            self.std_log = 1.0
+
+    def transform(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        对非零元素应用“对数变换 + Z-Score标准化”。0值保持为0。
+        
+        Args:
+            data (torch.Tensor): 待归一化的数据。
+            
+        Returns:
+            torch.Tensor: 归一化后的数据。
+        """
+        # 复制数据以避免就地修改
+        norm_data = data.clone()
+        # 创建非零掩码
+        non_zero_mask = (data != 0)
+        
+        if non_zero_mask.any():
+            # 获取所有非零元素
+            non_zero_elements = data[non_zero_mask]
+            
+            # Step 1: 对数变换
+            log_transformed_elements = torch.sign(non_zero_elements) * torch.log1p(torch.abs(non_zero_elements))
+            
+            # Step 2: Z-Score标准化
+            normalized_elements = (log_transformed_elements - self.mean_log) / self.std_log
+            
+            # 将归一化后的值放回原位置
+            norm_data[non_zero_mask] = normalized_elements
+            
+        return norm_data
+
+    def inverse_transform(self, norm_data: torch.Tensor) -> torch.Tensor:
+        """
+        对非零元素进行反向操作：“反向Z-Score + 反向对数变换”。0值保持为0。
+        
+        Args:
+            norm_data (torch.Tensor): 待反归一化的数据。
+            
+        Returns:
+            torch.Tensor: 反归一化后的数据，恢复到原始物理尺度。
+        """
+        # 复制数据以避免就地修改
+        inv_data = norm_data.clone()
+        # 创建非零掩码
+        non_zero_mask = (norm_data != 0)
+        
+        if non_zero_mask.any():
+            # 获取所有非零元素
+            non_zero_elements_norm = norm_data[non_zero_mask]
+            
+            # Step 1: 反向Z-Score，得到对数变换空间的值
+            inv_zscore_elements = (non_zero_elements_norm * self.std_log) + self.mean_log
+            
+            # Step 2: 反向对数变换，恢复到原始尺度
+            # 使用 sign(y) * (exp(|y|) - 1)
+            original_scale_elements = torch.sign(inv_zscore_elements) * (torch.exp(torch.abs(inv_zscore_elements)) - 1)
+
+            # 将恢复后的值放回原位置
+            inv_data[non_zero_mask] = original_scale_elements
+            
+        return inv_data
+    def get_mean(self):
+        return self.mean_log
 
 if __name__ == '__main__':
     from epanet_helper import WaterEPANetDataset
