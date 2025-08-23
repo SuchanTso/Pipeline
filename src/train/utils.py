@@ -1,10 +1,9 @@
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
-from model import GNN_ChebConv , TGCN_MessageCoupling , TGCN_MessageCoupling_Deep , TGCN_PrimalDual , GAT_RegressionModel , TGAT_MessageCoupling_Deep
+from model import *
 from loss import physics_loss
-from dataset import WaterEPANetDataset , GraphNormalizer , ZScoreNormalizer ,LogZScoreNormalizer
-import os
+from dataset import *
 import argparse
 from tqdm import tqdm
 import numpy as np
@@ -12,9 +11,12 @@ from torch_geometric.data import Data
 from torch_geometric.transforms import LineGraph
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch import nn
+from torch_geometric.loader import DataLoader
+
 
 
 def prepare_training_env(ckpt_path , data_path , hr , mask_ratio=0.2):
+    print(f"get in prepare_training_env")
     #node_in_feats, edge_in_feats, gcn_hidden, node_gru_hidden, edge_gru_hidden, edge_mlp_hidden, out_node_feats=1, out_edge_feats=1
     # model = TGCN_MessageCoupling(node_in_feats=4 , edge_in_feats=4 , gcn_hidden=32, node_gru_hidden=32 ,edge_gru_hidden=32 ,edge_mlp_hidden=32, out_node_feats=1,out_edge_feats=1)
     # model = TGCN_MessageCoupling_Deep(node_in_feats=4 , edge_in_feats=5 , gcn_hidden=64, node_gru_hidden=64 ,edge_gru_hidden=64 ,edge_mlp_hidden=64, out_node_feats=1,out_edge_feats=1)
@@ -37,25 +39,60 @@ def prepare_training_env(ckpt_path , data_path , hr , mask_ratio=0.2):
     #     edge_mlp_hidden=128,
     #     dropout=0.3
     # )
-    model = TGAT_MessageCoupling_Deep(
-        node_in_feats=4, 
-        edge_in_feats=5, 
-        gcn_hidden=64,       # GAT每头的隐藏维度
-        node_gru_hidden=128,
-        edge_gru_hidden=64,
-        edge_mlp_hidden=128,
-        gat_layers=2,        # 可以从2层开始
-        gru_layers=2,
-        dropout_rate=0.2,    # GAT对dropout更敏感，可以适当调高
-        heads=4              # 4或8是常见选择
+    # model = TGAT_MessageCoupling_Deep(
+    #     node_in_feats=4, 
+    #     edge_in_feats=5, 
+    #     gcn_hidden=64,       # GAT每头的隐藏维度
+    #     node_gru_hidden=128,
+    #     edge_gru_hidden=64,
+    #     edge_mlp_hidden=128,
+    #     gat_layers=2,        # 可以从2层开始
+    #     gru_layers=2,
+    #     dropout_rate=0.2,    # GAT对dropout更敏感，可以适当调高
+    #     heads=4              # 4或8是常见选择
+    # )
+    # model = T_GraphFormer(
+    #     node_in_feats=5,
+    #     edge_in_feats=5,
+    #     d_model=256,
+    #     num_heads=4,
+    #     num_transformer_layers=4,
+    #     gru_hidden=256,
+    #     gru_layers=2
+    # )
+    # model = GraphMaskedAutoencoder(
+    #     node_in_feats=4,
+    #     edge_in_feats=4,
+    #     d_model=256,
+    #     num_heads=4,
+    #     num_encoder_layers=4,
+    #     num_decoder_layers=4,
+    #     dropout=0.2
+    # )
+    model = W_GraphMAE(
+        node_in_feats=4,
+        edge_in_feats=4,
+        d_model=128,
+        num_heads=4,
+        num_encoder_layers=4, # 深编码器
+        num_decoder_layers=4  # 浅解码器
     )
+    # model = W_GraphMAE_V3(
+    #     node_in_feats=4,
+    #     edge_in_feats=4,
+    #     d_model=16,
+    #     num_heads=1,
+    #     num_encoder_layers=1, # 深编码器
+    #     decoder_d_model=16  # 浅解码器
+    # )
     # model = TGCN_PrimalDual(node_in_feats=4 , edge_in_feats=5 , gcn_hidden=32, node_gru_hidden=32 ,edge_gru_hidden=32,edge_gcn_hidden=32 ,edge_mlp_hidden=32, out_node_feats=1,out_edge_feats=1)
     # model = GNN_ChebConv(hid_channels=32, edge_features=3, node_features=3, edge_channels=32, dropout_rate=0.2, CC_K=2,
     #                      emb_aggr='max', depth=2, normalize=True)
     if os.path.exists(ckpt_path):
+        print(f"load model from {ckpt_path}")
         model.load_state_dict(torch.load(ckpt_path))
         
-    initial_lr = 1e-4 
+    initial_lr = 1e-3
     optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=1e-5)
 
     # 2. 定义学习率调度器
@@ -78,9 +115,27 @@ def prepare_training_env(ckpt_path , data_path , hr , mask_ratio=0.2):
     # x_norm = ZScoreNormalizer()
     # y_node_normalizer = ZScoreNormalizer()
     # y_edge_normalizer = ZScoreNormalizer()
-    pressure_norm = ZScoreNormalizer()
+    pressure_norm = LogZScoreNormalizer()
     flow_norm = LogZScoreNormalizer()
-    dataset = WaterEPANetDataset(data_path, hr ,pressure_normalizer=pressure_norm , flow_normalizer= flow_norm,masked_ratio=mask_ratio , window_size=6)
+    # dataset = WaterEPANetDataset(data_path, 
+    #                              hr,
+    #                              pressure_normalizer=pressure_norm,
+    #                              flow_normalizer= flow_norm,
+    #                              fit_node_mask_ratio=mask_ratio,
+    #                              fit_pipe_mask_ratio=mask_ratio,
+    #                              augment_node_mask_ratio_range=(mask_ratio - 0.3 , mask_ratio),
+    #                              augment_pipe_mask_ratio_range=(mask_ratio - 0.3 , mask_ratio),
+    #                              window_size=6)
+    epa = EpytHelper(data_path , hr)
+    dataset = PretrainDataset(
+        raw_data=epa.get_raw_data(),
+        fit_ratio=1.0,
+        fit_node_mask_ratio=mask_ratio,
+        pressure_norm=pressure_norm,
+        flow_norm=flow_norm,
+        fit_pipe_mask_ratio=mask_ratio
+    )
+    epa.destroy()
     # print(f"dataset load:{dataset[0]}")
     
     train_loader , val_loader , test_loader = dataset.gen_train_loader(batch_size=1)
@@ -133,3 +188,15 @@ def unified_loss(pred_nodes, y_node, pred_edges, y_edge):
     node_loss = criterion(pred_nodes, y_node)
     edge_loss = criterion(pred_edges, y_edge)
     return node_loss + edge_loss
+
+def scaled_cosine_loss(x, y, alpha=2.0): # beta是可调超参数
+    x = F.normalize(x, p=2, dim=-1)
+    y = F.normalize(y, p=2, dim=-1)
+
+    # loss =  - (x * y).sum(dim=-1)
+    # loss = (x_h - y_h).norm(dim=1).pow(alpha)
+
+    loss = (1 - (x * y).sum(dim=-1)).pow_(alpha)
+
+    loss = loss.mean()
+    return loss

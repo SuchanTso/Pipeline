@@ -194,3 +194,90 @@ class EdgeFeatureGATLayer(nn.Module):
         
         h_prime = torch.matmul(attention, Wh)
         return F.elu(h_prime)
+    
+
+# file: gma_model.py (or wherever GraphTransformerLayer is)
+
+class GraphTransformerLayer(nn.Module):
+    def __init__(self, d_model, num_heads, dropout=0.1, max_spd=10):
+        super().__init__()
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        
+        self.num_heads = num_heads
+        self.d_head = d_model // num_heads
+        
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        
+        # --- 核心修改 ---
+        # 1. 移除 __init__ 中的 edge_in_feats 参数
+        # 2. 确保 edge_encoder 的输入维度是 d_model
+        
+        self.degree_encoder = nn.Embedding(20, d_model, padding_idx=0)
+        self.spd_encoder = nn.Embedding(max_spd + 2, num_heads)
+        self.edge_encoder = nn.Linear(d_model, num_heads) # 输入维度现在固定为 d_model
+
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.layer_norm2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model)
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x_proj, edge_attr_proj, degree_enc, spd_matrix, edge_map, edge_index):
+        """
+        Args:
+            x_proj (torch.Tensor): 投影后的节点特征 [N, d_model]
+            edge_attr_proj (torch.Tensor): 投影后的边特征 [E, d_model]
+            ... (其他参数不变) ...
+        """
+        N, _ = x_proj.shape
+        device = x_proj.device
+
+        # --- 0. 编码度数并加到节点特征上 ---
+        x = x_proj
+        if degree_enc is not None:
+            x = x + self.degree_encoder(degree_enc.long().squeeze(-1))
+        
+        # --- 1. 多头注意力计算 ---
+        q = self.q_proj(x).view(N, self.num_heads, self.d_head)
+        k = self.k_proj(x).view(N, self.num_heads, self.d_head)
+        v = self.v_proj(x).view(N, self.num_heads, self.d_head)
+
+        q, k, v = q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1)
+
+        content_attn = torch.bmm(q, k.transpose(1, 2)) / (self.d_head ** 0.5)
+        
+        attn_scores = content_attn
+        if spd_matrix is not None:
+            # (a) 结构偏置
+            # spd_matrix 是 [N, N, max_spd + 2]，我们需要将其转换为 [H, N, N]
+            structural_bias = self.spd_encoder(spd_matrix).permute(2, 0, 1)
+            attn_scores = attn_scores + structural_bias
+
+        # (c) 边特征偏置
+        # --- 核心修改 ---
+        # edge_encoder 现在直接处理投影后的 edge_attr_proj
+        if edge_attr_proj is not None:
+            # edge_attr_proj 是 [E, d_model]，我们需要将其转换为 [H, E]
+            edge_bias_proj = self.edge_encoder(edge_attr_proj).permute(1, 0)
+            edge_bias = torch.zeros(self.num_heads, N, N, device=device)
+            edge_bias[:, edge_index[0], edge_index[1]] = edge_bias_proj
+            attn_scores = attn_scores + edge_bias
+        # attn_scores = content_attn + structural_bias + edge_bias
+        attn_probs = F.softmax(attn_scores, dim=-1)
+        attn_probs = self.dropout(attn_probs)
+
+        out = torch.bmm(attn_probs, v)
+        out = out.transpose(0, 1).contiguous().view(N, -1)
+        
+        # --- 2. Add & Norm, FFN ---
+        x = self.layer_norm1(x + self.dropout(self.out_proj(out)))
+        x = self.layer_norm2(x + self.dropout(self.ffn(x)))
+        
+        return x

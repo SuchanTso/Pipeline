@@ -825,3 +825,109 @@ class GAT_RegressionModel(nn.Module):
         pred_edge = self.edge_mlp(edge_prediction_input)
 
         return pred_node, pred_edge
+    
+    
+class T_GraphFormer(nn.Module):
+    def __init__(self, node_in_feats, edge_in_feats, d_model, num_heads, num_transformer_layers,
+                 gru_hidden, gru_layers, out_node_feats=1, out_edge_feats=1, 
+                 edge_mlp_hidden=128, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        
+        # --- 输入投影层 ---
+        # 将原始的、不同维度的特征统一映射到d_model
+        self.node_in_proj = nn.Linear(node_in_feats, d_model)
+        # 注意：这里的edge_in_feats是原始的、未归一化的特征维度
+        # 在GraphTransformerLayer中，我们将使用它来计算偏置
+        self.original_edge_feats_dim = edge_in_feats
+        
+        # --- 空间建模层 ---
+        self.transformer_layers = nn.ModuleList(
+            [GraphTransformerLayer(d_model, num_heads, self.original_edge_feats_dim, dropout) 
+             for _ in range(num_transformer_layers)]
+        )
+        
+        # --- 时间建模层 ---
+        self.gru = nn.GRU(
+            input_size=d_model,
+            hidden_size=gru_hidden,
+            num_layers=gru_layers,
+            batch_first=True, # 输入形状为 (batch, seq, feature)
+            dropout=dropout if gru_layers > 1 else 0
+        )
+        
+        # --- 预测头 ---
+        self.pressure_mlp = nn.Sequential(
+            nn.Linear(gru_hidden, gru_hidden // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(gru_hidden // 2, out_node_feats)
+        )
+
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(gru_hidden * 2, edge_mlp_hidden), # 输入来自两个节点的嵌入
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(edge_mlp_hidden, out_edge_feats)
+        )
+
+    def forward(self, x_seq, edge_attr_seq, edge_index, degree_encoding, spd_matrix, edge_map):
+        """
+        Args:
+            x_seq (torch.Tensor): [B, T, N, F_node] - 节点特征序列
+            edge_attr_seq (torch.Tensor): [B, T, E, F_edge] - 边特征序列
+            edge_index (torch.Tensor): [B, 2, E] - 边索引 (B=1时为[2,E])
+            degree_encoding (torch.Tensor): [B, N, 1]
+            spd_matrix (torch.Tensor): [B, N, N]
+            edge_map (torch.Tensor): [B, N, N]
+        """
+        # --- 处理Batch维度 ---
+        # 我们的实现假设batch_size=1，这在图时序任务中很常见且简化了代码
+        if x_seq.dim() == 4 and x_seq.size(0) == 1:
+            x_seq = x_seq.squeeze(0) # [T, N, F_node]
+            edge_attr_seq = edge_attr_seq.squeeze(0) # [T, E, F_edge]
+            edge_index = edge_index.squeeze(0) # [2, E]
+            degree_encoding = degree_encoding.squeeze(0)
+            spd_matrix = spd_matrix.squeeze(0)
+            edge_map = edge_map.squeeze(0)
+        elif x_seq.dim() != 3:
+            raise ValueError(f"This model implementation currently supports batch_size=1. "
+                             f"Input x_seq has {x_seq.dim()} dimensions.")
+        
+        T, N, _ = x_seq.shape
+        
+        # --- 1. 时空编码 ---
+        node_sequences = []
+        for t in range(T):
+            x_t = x_seq[t]              # [N, F_node]
+            edge_attr_t = edge_attr_seq[t]  # [E, F_edge]
+            
+            # (a) 输入投影
+            x_t_proj = self.node_in_proj(x_t)
+            
+            # (b) 通过多层Graph Transformer提取空间特征
+            for layer in self.transformer_layers:
+                x_t_proj = layer(x_t_proj, edge_attr_t, degree_encoding, spd_matrix, edge_map, edge_index)
+            
+            node_sequences.append(x_t_proj)
+        
+        node_sequences_tensor = torch.stack(node_sequences).permute(1, 0, 2) # [N, T, d_model]
+        
+        # --- 2. 时序聚合 ---
+        _, h_n_node = self.gru(node_sequences_tensor) # h_n_node shape: [gru_layers, N, gru_hidden]
+        node_embed = h_n_node[-1, :, :] # [N, gru_hidden] - 取最后一层GRU的隐藏状态
+        
+        # --- 3. 预测 ---
+        # 节点压力预测
+        pred_node = self.pressure_mlp(node_embed) # [N, out_node_feats]
+
+        # 边流量预测
+        src, dst = edge_index[0], edge_index[1]
+        src_embed = node_embed[src] # [E, gru_hidden]
+        dst_embed = node_embed[dst] # [E, gru_hidden]
+        
+        edge_prediction_input = torch.cat([src_embed, dst_embed], dim=-1)
+        pred_edge = self.edge_mlp(edge_prediction_input) # [E, out_edge_feats]
+
+        # 为了匹配输出格式，如果batch_size=1，我们给它加上一个batch维度
+        return pred_node, pred_edge

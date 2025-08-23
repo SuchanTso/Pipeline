@@ -74,14 +74,50 @@ def evaluate(model, data_loader, device):
     total_loss = 0
     with torch.no_grad():  # 非常重要：在评估时不需要计算梯度
         for batch in data_loader:
-            x_seq, edge_index, edge_attr_seq, y_node, y_edge, _, _ = batch
-            x_seq = x_seq[0].to(device)
-            edge_index = edge_index[0].to(device)
-            y_node = y_node[0].to(device)
-            y_edge = y_edge[0].to(device)
-            edge_attr = edge_attr_seq[0].to(device)
+            # x_seq, edge_index, edge_attr_seq, y_node, y_edge, _, _ = batch
+            # x_seq = x_seq[0].to(device)
+            # edge_index = edge_index[0].to(device)
+            # y_node = y_node[0].to(device)
+            # y_edge = y_edge[0].to(device)
+            # edge_attr = edge_attr_seq[0].to(device)
 
-            pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            # pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            
+            x_seq = batch['x_seq'].squeeze(0).to(device)
+            edge_attr_seq = batch['edge_attr_seq'].squeeze(0).to(device)
+            y_node = batch['y_node'].squeeze(0).to(device)
+            y_edge = batch['y_edge'].squeeze(0).to(device)
+            
+            # 对于图拓扑信息，PyG DataLoader通常不会在batch维度上增加
+            # 因为对于同一个batch的所有样本，图结构是相同的（如果batch_size>1会报错，见下文）
+            # 我们先假设 batch_size=1
+            edge_index = batch['edge_index'].to(device).squeeze(0) # 去掉batch维度
+            degree_encoding = batch['degree_encoding'].to(device).squeeze(0)
+            spd_matrix = batch['spd_matrix'].to(device).squeeze(0)
+            edge_map = batch['edge_map'].to(device).squeeze(0)
+            node_indices = batch['masked_node_index'].to(device)
+            edge_indices = batch['masked_pipe_index'].to(device)
+            
+            masked_node_index = node_indices[0]
+            masked_pipe_index = edge_indices[0]
+            
+            # x_seq = x_seq[0].to(device)
+            # edge_index = edge_index[0].to(device)
+            # y_node = y_node[0].to(device)
+            # y_edge = y_edge[0].to(device)
+            # edge_attr = edge_attr_seq[0].to(device)
+
+            optimizer.zero_grad()
+            
+            # pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            pred_nodes, pred_edges = model(
+                x_seq, 
+                edge_attr_seq, 
+                edge_index,
+                degree_encoding,
+                spd_matrix,
+                edge_map
+            )
             
             # 使用与训练时相同的损失函数
             loss = unified_loss(pred_nodes, y_node, pred_edges, y_edge)
@@ -105,19 +141,47 @@ def training(model, optimizer, train_loader, val_loader, epochs, device, ckpt_pa
         model.train()  # 确保模型处于训练模式
         epoch_train_loss = 0
         for batch in train_loader:
-            x_seq, edge_index, edge_attr_seq, y_node, y_edge, _, _ = batch
-            x_seq = x_seq[0].to(device)
-            edge_index = edge_index[0].to(device)
-            y_node = y_node[0].to(device)
-            y_edge = y_edge[0].to(device)
-            edge_attr = edge_attr_seq[0].to(device)
-
-            optimizer.zero_grad()
+            # x_seq, edge_index, edge_attr_seq, y_node, y_edge, _, _ = batch
+            x_seq = batch['x_seq'].squeeze(0).to(device)
+            edge_attr_seq = batch['edge_attr_seq'].squeeze(0).to(device)
+            y_node = batch['y_node'].squeeze(0).to(device)
+            y_edge = batch['y_edge'].squeeze(0).to(device)
             
-            pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            # 对于图拓扑信息，PyG DataLoader通常不会在batch维度上增加
+            # 因为对于同一个batch的所有样本，图结构是相同的（如果batch_size>1会报错，见下文）
+            # 我们先假设 batch_size=1
+            edge_index = batch['edge_index'].to(device).squeeze(0) # 去掉batch维度
+            degree_encoding = batch['degree_encoding'].to(device).squeeze(0)
+            spd_matrix = batch['spd_matrix'].to(device).squeeze(0)
+            edge_map = batch['edge_map'].to(device).squeeze(0)
+            node_indices = batch['masked_node_index'].to(device)
+            edge_indices = batch['masked_pipe_index'].to(device)
+            
+            masked_node_index = node_indices[0]
+            masked_pipe_index = edge_indices[0]
+            
+            # x_seq = x_seq[0].to(device)
+            # edge_index = edge_index[0].to(device)
+            # y_node = y_node[0].to(device)
+            # y_edge = y_edge[0].to(device)
+            # edge_attr = edge_attr_seq[0].to(device)
+
+            
+            # pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            pred_nodes, pred_edges = model(
+                x_seq, 
+                edge_attr_seq, 
+                edge_index,
+                degree_encoding,
+                spd_matrix,
+                edge_map
+            )
             
             loss = unified_loss(pred_nodes, y_node, pred_edges, y_edge)
-            
+            # print(f"pred_nodes: {pred_nodes.shape} , pred_edges: {pred_edges.shape}")
+            # print(f"y_node: {y_node.shape} , y_edge: {y_edge.shape}")
+            optimizer.zero_grad()
+
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -205,19 +269,54 @@ def eval(model , test_loader , pressure_norm , flow_norm , device):
     np.set_printoptions(precision=10, suppress=True)
     with torch.no_grad():
         for batch in test_loader:
-            x_seq, edge_index, edge_attr, y_node, y_edge , node_indices , edge_indices = batch  # x_seq: [B, T, N, F]
-            x_seq = x_seq[0].to(device)          # [T, N, F]
-            edge_index = edge_index[0].to(device)  # [2, E]
-            y_node = y_node[0].to(device)        # [N, 1]
-            y_edge = y_edge[0].to(device)        # [E, 1]
-            edge_attr = edge_attr[0].to(device)
+            # x_seq, edge_index, edge_attr, y_node, y_edge , node_indices , edge_indices = batch  # x_seq: [B, T, N, F]
+            # x_seq = x_seq[0].to(device)          # [T, N, F]
+            # edge_index = edge_index[0].to(device)  # [2, E]
+            # y_node = y_node[0].to(device)        # [N, 1]
+            # y_edge = y_edge[0].to(device)        # [E, 1]
+            # edge_attr = edge_attr[0].to(device)
+            
+            x_seq = batch['x_seq'].squeeze(0).to(device)
+            edge_attr_seq = batch['edge_attr_seq'].squeeze(0).to(device)
+            y_node = batch['y_node'].squeeze(0).to(device)
+            y_edge = batch['y_edge'].squeeze(0).to(device)
+            
+            # 对于图拓扑信息，PyG DataLoader通常不会在batch维度上增加
+            # 因为对于同一个batch的所有样本，图结构是相同的（如果batch_size>1会报错，见下文）
+            # 我们先假设 batch_size=1
+            edge_index = batch['edge_index'].to(device).squeeze(0) # 去掉batch维度
+            degree_encoding = batch['degree_encoding'].to(device).squeeze(0)
+            spd_matrix = batch['spd_matrix'].to(device).squeeze(0)
+            edge_map = batch['edge_map'].to(device).squeeze(0)
+            node_indices = batch['masked_node_index'].to(device)
+            edge_indices = batch['masked_pipe_index'].to(device)
+            
+            masked_node_index = node_indices[0]
+            masked_pipe_index = edge_indices[0]
+            
+            # x_seq = x_seq[0].to(device)
+            # edge_index = edge_index[0].to(device)
+            # y_node = y_node[0].to(device)
+            # y_edge = y_edge[0].to(device)
+            # edge_attr = edge_attr_seq[0].to(device)
 
-            # 调用模型
-            pred_nodes , pred_edges = model(x_seq, edge_index , edge_attr)  # pred_node: [B, N, 1]
+            
+            # pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            pred_nodes, pred_edges = model(
+                x_seq, 
+                edge_attr_seq, 
+                edge_index,
+                degree_encoding,
+                spd_matrix,
+                edge_map
+            )
+
+            # # 调用模型
+            # pred_nodes , pred_edges = model(x_seq, edge_index , edge_attr)  # pred_node: [B, N, 1]
             inverse_pred_nodes = pressure_norm.inverse_transform(pred_nodes.cpu())
             inverse_real_nodes = pressure_norm.inverse_transform(y_node.cpu())
-            print(f"pred_nodes: {inverse_pred_nodes[node_indices].numpy()}")
-            print(f"real_nodes: {inverse_real_nodes[node_indices].numpy()}")
+            print(f"pred_nodes: {inverse_pred_nodes[masked_node_index].numpy()}")
+            print(f"real_nodes: {inverse_real_nodes[masked_node_index].numpy()}")
             inverse_pred_edge = flow_norm.inverse_transform(pred_edges.cpu())
             inverse_real_edge = flow_norm.inverse_transform(y_edge.cpu())
             print(f"pred_edge: {inverse_pred_edge[edge_indices].numpy()}")
@@ -245,4 +344,4 @@ if __name__ == "__main__":
              args.model_path , 
              scheduler=None,
              log_every_epoch=args.log_every_epoch )
-    eval(model, val_loader , pressure_norm , flow_norm ,device)
+    # eval(model, val_loader , pressure_norm , flow_norm ,device)

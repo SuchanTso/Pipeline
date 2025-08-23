@@ -151,16 +151,49 @@ def eval(model, test_loader, pressure_norm, flow_norm, device, epoch=0, plot_sam
         for batch in tqdm(test_loader, desc=f"Evaluating Epoch {epoch}"):
             # 你的batch解包和设备转移代码
             # ...
-            x_seq, edge_index, edge_attr, y_node, y_edge, masked_node_index, masked_pipe_index = batch
-            x_seq = x_seq[0].to(device)
-            edge_index = edge_index[0].to(device)
-            edge_attr = edge_attr[0].to(device)
-            y_node = y_node[0].to(device)
-            y_edge = y_edge[0].to(device)
-            masked_node_index = masked_node_index[0]
-            masked_pipe_index = masked_pipe_index[0]
+            # x_seq, edge_index, edge_attr, y_node, y_edge, masked_node_index, masked_pipe_index = batch
+            # x_seq = x_seq[0].to(device)
+            # edge_index = edge_index[0].to(device)
+            # edge_attr = edge_attr[0].to(device)
+            # y_node = y_node[0].to(device)
+            # y_edge = y_edge[0].to(device)
+            # masked_node_index = masked_node_index[0]
+            # masked_pipe_index = masked_pipe_index[0]
 
-            pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            # pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            x_seq = batch['x_seq'].squeeze(0).to(device)
+            edge_attr_seq = batch['edge_attr_seq'].squeeze(0).to(device)
+            y_node = batch['y_node'].squeeze(0).to(device)
+            y_edge = batch['y_edge'].squeeze(0).to(device)
+            
+            # 对于图拓扑信息，PyG DataLoader通常不会在batch维度上增加
+            # 因为对于同一个batch的所有样本，图结构是相同的（如果batch_size>1会报错，见下文）
+            # 我们先假设 batch_size=1
+            edge_index = batch['edge_index'].to(device).squeeze(0) # 去掉batch维度
+            degree_encoding = batch['degree_encoding'].to(device).squeeze(0)
+            spd_matrix = batch['spd_matrix'].to(device).squeeze(0)
+            edge_map = batch['edge_map'].to(device).squeeze(0)
+            node_indices = batch['masked_node_index'].to(device)
+            edge_indices = batch['masked_pipe_index'].to(device)
+            
+            masked_node_index = node_indices[0]
+            masked_pipe_index = edge_indices[0]
+            
+            # x_seq = x_seq[0].to(device)
+            # edge_index = edge_index[0].to(device)
+            # y_node = y_node[0].to(device)
+            # y_edge = y_edge[0].to(device)
+            # edge_attr = edge_attr_seq[0].to(device)
+            
+            # pred_nodes, pred_edges = model(x_seq, edge_index, edge_attr)
+            pred_nodes, pred_edges = model(
+                x_seq, 
+                edge_attr_seq, 
+                edge_index,
+                degree_encoding,
+                spd_matrix,
+                edge_map
+            )
             
             # 计算整体损失（在归一化空间）
             node_loss = torch.nn.MSELoss()(pred_nodes, y_node)
@@ -174,7 +207,7 @@ def eval(model, test_loader, pressure_norm, flow_norm, device, epoch=0, plot_sam
              node_pred_masked, node_real_masked,
              edge_pred_masked, edge_real_masked) = gen_batch_filtered_loss(
                 pred_nodes, pred_edges, y_node, y_edge,
-                masked_node_index, masked_pipe_index,
+                masked_node_index.cpu(), masked_pipe_index.cpu(),
                 pressure_norm, flow_norm
             )
             

@@ -227,6 +227,7 @@ class LogZScoreNormalizer:
         """
         # 找到所有非零元素
         non_zero_elements = data[data != 0]
+        print(f"LogZScoreNormalizer: Fitting on {non_zero_elements.numel()} non-zero elements.")
         
         if non_zero_elements.numel() > 0:
             # Step 1: 对数变换
@@ -240,6 +241,7 @@ class LogZScoreNormalizer:
         # 防止标准差为0（当所有值都相同时）
         if self.std_log < 1e-8:
             self.std_log = 1.0
+        print(f"log Mean: {self.mean_log:.4f}, Std: {self.std_log:.4f}")
 
     def transform(self, data: torch.Tensor) -> torch.Tensor:
         """
