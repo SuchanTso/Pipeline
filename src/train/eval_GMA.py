@@ -152,8 +152,8 @@ def evaluate_gma(model, data_loader, device, pressure_norm, flow_norm,
     loss_fn = nn.MSELoss()
     total_loss_norm = 0.0
     
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    # if not os.path.exists(save_dir):
+    #     os.makedirs(save_dir)
 
     with torch.no_grad():
         for i, batch in enumerate(tqdm(data_loader, desc=f"Evaluating GMA Epoch {epoch}")):
@@ -177,8 +177,8 @@ def evaluate_gma(model, data_loader, device, pressure_norm, flow_norm,
             recon_pressures_norm, recon_flows_norm = model(batch, masked_node_indices, masked_edge_indices)
             
             # --- 3. 提取真实值 ---
-            real_pressures_norm = batch.y_node
-            real_flows_norm = batch.y_edge
+            real_pressures_norm = batch.x_dynamic
+            real_flows_norm = batch.edge_attr_dynamic
             
             # --- 4. 累加被掩码部分的结果，用于计算总指标 ---
             if masked_node_indices.numel() > 0:
@@ -202,27 +202,27 @@ def evaluate_gma(model, data_loader, device, pressure_norm, flow_norm,
             total_loss_norm += loss.item() if isinstance(loss, torch.Tensor) else loss
 
             # --- 6. 可视化当前批次的结果 ---
-            fig_path = ""
-            if save_dir is not None:
-                fig_path = os.path.join('figures', save_dir, net_name)
-            if plot_every_n_batches > 0 and i % plot_every_n_batches == 0:
-                if masked_node_indices.numel() > 0 and masked_edge_indices.numel() > 0:
-                    # 反归一化用于绘图
-                    recon_nodes_phys = pressure_norm.inverse_transform(recon_pressures_norm.cpu())
-                    real_nodes_phys = pressure_norm.inverse_transform(real_pressures_norm.cpu())
-                    recon_edges_phys = flow_norm.inverse_transform(recon_flows_norm.cpu())
-                    real_edges_phys = flow_norm.inverse_transform(real_flows_norm.cpu())
+            # fig_path = ""
+            # if save_dir is not None:
+            #     fig_path = os.path.join('figures', save_dir, net_name)
+            # if plot_every_n_batches > 0 and i % plot_every_n_batches == 0:
+            #     if masked_node_indices.numel() > 0 and masked_edge_indices.numel() > 0:
+            #         # 反归一化用于绘图
+            #         recon_nodes_phys = pressure_norm.inverse_transform(recon_pressures_norm.cpu())
+            #         real_nodes_phys = pressure_norm.inverse_transform(real_pressures_norm.cpu())
+            #         recon_edges_phys = flow_norm.inverse_transform(recon_flows_norm.cpu())
+            #         real_edges_phys = flow_norm.inverse_transform(real_flows_norm.cpu())
                     
-                    plot_reconstruction(
-                        recon_nodes_phys[masked_node_indices.cpu()].flatten().numpy(),
-                        real_nodes_phys[masked_node_indices.cpu()].flatten().numpy(),
-                        recon_edges_phys[masked_edge_indices.cpu()].flatten().numpy(),
-                        real_edges_phys[masked_edge_indices.cpu()].flatten().numpy(),
-                        masked_node_indices.cpu().numpy(),
-                        masked_edge_indices.cpu().numpy(),
-                        epoch=f"{epoch}_batch{i}",
-                        save_dir=fig_path
-                    )
+            #         plot_reconstruction(
+            #             recon_nodes_phys[masked_node_indices.cpu()].flatten().numpy(),
+            #             real_nodes_phys[masked_node_indices.cpu()].flatten().numpy(),
+            #             recon_edges_phys[masked_edge_indices.cpu()].flatten().numpy(),
+            #             real_edges_phys[masked_edge_indices.cpu()].flatten().numpy(),
+            #             masked_node_indices.cpu().numpy(),
+            #             masked_edge_indices.cpu().numpy(),
+            #             epoch=f"{epoch}_batch{i}",
+            #             save_dir=fig_path
+            #         )
 
     # --- 聚合所有批次的结果 ---
     avg_loss_norm = total_loss_norm / len(data_loader)
@@ -264,7 +264,9 @@ if __name__ == "__main__":
     #          args.model_path , 
     #          scheduler=None,
     #          log_every_epoch=args.log_every_epoch )
-    
+    if len(optimizer) == 1:
+        optimizer = optimizer[0]
+        
     val_loss = evaluate_gma(model, 
                             test_loader, 
                             device=device,

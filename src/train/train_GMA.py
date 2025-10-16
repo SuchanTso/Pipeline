@@ -36,7 +36,7 @@ def plot_loss(train_losses, val_losses , fig_path):
     plt.grid(True)
     plt.savefig(fig_path)
 def evaluate_gma(model, data_loader, device, node_mask_ratio, edge_mask_ratio,
-                 pressure_col_idx, flow_col_idx):
+                 pressure_col_idx, flow_col_idx , grad_weight=0):
     model.eval()
     total_loss = 0
     loss_fn = nn.MSELoss()
@@ -62,8 +62,8 @@ def evaluate_gma(model, data_loader, device, node_mask_ratio, edge_mask_ratio,
             
             reconstructed_pressures, reconstructed_flows = model(batch, masked_node_indices, masked_edge_indices)
             
-            true_pressures = batch.y_node
-            true_flows =batch.y_edge
+            true_pressures = batch.x_dynamic
+            true_flows =batch.edge_attr_dynamic
 
             loss_node = 0.0
             # 确保列表不为空再计算损失
@@ -71,6 +71,10 @@ def evaluate_gma(model, data_loader, device, node_mask_ratio, edge_mask_ratio,
                 pred = reconstructed_pressures[masked_node_indices]
                 true = true_pressures[masked_node_indices]
                 loss_node = loss_fn(pred, true)
+                
+                src , dst = batch.edge_index
+                true_grads = true_pressures[src] - true_pressures[dst]
+                # loss_grad = nn.MSELoss()(reconstructed_grads[masked_edge_indices] , true_grads[masked_edge_indices])
             
             loss_edge = 0.0
             if masked_edge_indices.numel() > 0:
@@ -99,6 +103,8 @@ def pretrain_gma(model, optimizer, train_loader, val_loader, epochs, device, ckp
 
     iterator = tqdm(range(epochs), desc='Pre-training GMA', total=epochs)
     
+    model_name = ckpt_path.split('/')[-1].replace('.pt','')
+    
     for epoch in iterator:
         model.train()
         epoch_train_loss = 0
@@ -108,10 +114,11 @@ def pretrain_gma(model, optimizer, train_loader, val_loader, epochs, device, ckp
             optimizer.zero_grad()
             
             # --- 动态生成用于训练的掩码 (作用于整个Batch) ---
-            # node_mask_ratio = random.uniform(*mask_ratio_range)
-            # edge_mask_ratio = random.uniform(*mask_ratio_range)
-            node_mask_ratio = 0.5
-            edge_mask_ratio = 0.5
+            node_mask_ratio = random.uniform(*mask_ratio_range)
+            edge_mask_ratio = random.uniform(*mask_ratio_range)
+            # node_mask_ratio = 0.5
+            # edge_mask_ratio = 0.5
+            w = 0.1
             
             num_masked_nodes = int(batch.num_nodes * node_mask_ratio)
             num_masked_edges = int(batch.num_edges * edge_mask_ratio)
@@ -125,8 +132,8 @@ def pretrain_gma(model, optimizer, train_loader, val_loader, epochs, device, ckp
 
             reconstructed_pressures, reconstructed_flows = model(batch, masked_node_indices, masked_edge_indices)
             
-            true_pressures = batch.y_node
-            true_flows =batch.y_edge
+            true_pressures = batch.x_dynamic
+            true_flows =batch.edge_attr_dynamic
             # print(f"pred_node: {reconstructed_pressures} , true_node: {true_pressures}")
 
             loss_node = 0.0
@@ -140,12 +147,11 @@ def pretrain_gma(model, optimizer, train_loader, val_loader, epochs, device, ckp
                 pred = reconstructed_flows[masked_edge_indices]
                 true = true_flows[masked_edge_indices]
                 loss_edge = loss_fn(pred, true)
-                # print(f"Node Loss:{loss_node.item():.4f} Edge Loss:{loss_edge.item():.4f}")
 
-            loss = loss_node + loss_edge 
+            loss = loss_node + loss_edge
 
             loss.backward()
-            # nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             epoch_train_loss += loss.item()
 
@@ -156,7 +162,8 @@ def pretrain_gma(model, optimizer, train_loader, val_loader, epochs, device, ckp
         if epoch % log_every_epoch == 0:
             avg_val_loss = evaluate_gma(model, val_loader, device, 
                                         node_mask_ratio=0.75, edge_mask_ratio=0.75,
-                                        pressure_col_idx=pressure_col_idx, flow_col_idx=flow_col_idx)
+                                        pressure_col_idx=pressure_col_idx, flow_col_idx=flow_col_idx,
+                                        grad_weight=w)
             val_losses.append(avg_val_loss)
             
             if scheduler:
@@ -169,12 +176,12 @@ def pretrain_gma(model, optimizer, train_loader, val_loader, epochs, device, ckp
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 torch.save(model.state_dict(), ckpt_path)
-                torch.save(model.encoder.state_dict(), ckpt_path.replace('.pt', '_encoder.pt'))
+            #     torch.save(model.encoder.state_dict(), ckpt_path.replace('.pt', '_encoder.pt'))
         else:
             if val_losses: val_losses.append(val_losses[-1])
             else: val_losses.append(None)
             
-        plot_loss(train_losses, val_losses, 'pretrain_loss.png') # plot_loss函数无需修改
+        plot_loss(train_losses, val_losses, f'pretrain_{model_name}_loss.png') # plot_loss函数无需修改
     
     return train_losses, val_losses
             
@@ -185,6 +192,8 @@ if __name__ == "__main__":
                                                                                                                            args.data, 
                                                                                                                            args.hours_analysis,
                                                                                                                            mask_ratio=0.5)
+    if len(optimizer) == 1:
+        optimizer = optimizer[0]
     pretrain_gma(model, 
              optimizer, 
              train_loader , 

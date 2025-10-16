@@ -101,3 +101,72 @@ class WaterEPANetDataset(Dataset):
         val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
         test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         return train_loader, val_loader, test_loader
+    
+class EST_MAE_Dataset(Dataset):
+    def __init__(self, processed_data_list, window_size=12):
+        super().__init__()
+        self.processed_data_list = processed_data_list
+        self.window_size = window_size
+        print(f"EST_MAE_Dataset created with {len(self)} windows.")
+        self.node_type = self.processed_data_list[0].node_type
+        
+
+    def len(self):
+        # 减去窗口大小，因为每个样本都需要一个完整的历史窗口
+        return len(self.processed_data_list) - self.window_size + 1
+
+    def get(self, idx):
+        window_slice = self.processed_data_list[idx : idx + self.window_size]
+        
+        # --- 静态和拓扑信息来自最后一帧 ---
+        target_frame = window_slice[-1]
+        
+        # --- 时序特征 ---
+        x_dynamic_seq = torch.stack([d.x_dynamic for d in window_slice], dim=0)
+        edge_attr_dynamic_seq = torch.stack([d.edge_attr_dynamic for d in window_slice], dim=0)
+
+        # --- [CRITICAL FIX] 告诉DataLoader如何批处理 ---
+        # 我们创建一个新的Data对象，而不是字典
+        data = Data(
+            x_static=target_frame.x_static,
+            x_dynamic=target_frame.x_dynamic, # y_node
+            
+            edge_attr_static=target_frame.edge_attr_static,
+            edge_attr_dynamic=target_frame.edge_attr_dynamic, # y_edge
+            
+            edge_index=target_frame.edge_index,
+            degree_encoding=target_frame.degree_encoding,
+            spd_matrix=target_frame.spd_matrix,
+            node_type=self.node_type,
+            
+            # --- 我们自己添加的自定义属性 ---
+            x_dynamic_window=x_dynamic_seq.permute(1, 0, 2), # -> [N, T, D]
+            edge_attr_dynamic_window=edge_attr_dynamic_seq.permute(1, 0, 2), # -> [E, T, D]
+        )
+        
+        return data
+
+    # --- [CRITICAL FIX] 实现 follow_batch 属性 ---
+    # 这是一个特殊的类属性，PyG DataLoader会读取它
+    @property
+    def follow_batch(self):
+        # 告诉DataLoader，'x_dynamic_window'的第0维（节点维）
+        # 应该像'x_static'的第0维一样进行批处理（拼接和偏移）。
+        # 'edge_attr_dynamic_window'的第0维（边维）
+        # 应该像'edge_attr_static'的第0维一样进行批处理。
+        return ['x_static', 'edge_attr_static']
+
+    def __getitem__(self, idx):
+        return self.get(idx)
+    
+    def gen_train_loader(self, train_ratio=0.8, val_ratio=0.1, batch_size=32, shuffle=True):
+        total_len = len(self)
+        train_end = int(total_len * train_ratio)
+        val_end = train_end + int(total_len * val_ratio)
+        train_dataset = Subset(self, range(0, train_end))
+        val_dataset   = Subset(self, range(train_end, val_end))
+        test_dataset  = Subset(self, range(val_end, total_len))
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle)
+        val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        return train_loader, val_loader, test_loader
