@@ -216,10 +216,15 @@ def load_model(model_name , model_path):
     if os.path.exists(model_path):
         print(f"load model from {model_path}")
         model.load_state_dict(torch.load(model_path))
+    else:
+        print(f"model path {model_path} does not exist. Train from scratch.")
     return model , optimizers
-def load_data(data_name , data_path, hr ,batch_size , mask_ratio=0.2):
-    pressure_norm = LogZScoreNormalizer()
-    flow_norm = LogZScoreNormalizer()
+def load_data(data_name , data_path, hr ,batch_size, pressure_normalizer=None , flow_normalizer=None, node_static_norm=None, edge_static_norm=None , mask_ratio=0.2):
+    pressure_norm = pressure_normalizer if pressure_normalizer else LogZScoreNormalizer()
+    flow_norm = flow_normalizer if flow_normalizer else LogZScoreNormalizer()
+    
+    need_fit = True if (not pressure_normalizer) or (not flow_normalizer) or (not node_static_norm) or (not edge_static_norm) else False
+    print(f"need fit: {need_fit}")
     epa = EpytHelper(data_path , hr)
     if data_name == "PretrainDataset":
         dataset = PretrainDataset(
@@ -228,7 +233,10 @@ def load_data(data_name , data_path, hr ,batch_size , mask_ratio=0.2):
             fit_node_mask_ratio=mask_ratio,
             pressure_norm=pressure_norm,
             flow_norm=flow_norm,
-            fit_pipe_mask_ratio=mask_ratio
+            node_static_norm=node_static_norm,
+            edge_static_norm=edge_static_norm,
+            fit_pipe_mask_ratio=mask_ratio,
+            need_fit=need_fit
         )
         train_loader , val_loader , test_loader = dataset.gen_train_loader(batch_size=batch_size)
     elif data_name == "PretrainDataset_ET":
@@ -238,7 +246,10 @@ def load_data(data_name , data_path, hr ,batch_size , mask_ratio=0.2):
             fit_node_mask_ratio=mask_ratio,
             pressure_norm=pressure_norm,
             flow_norm=flow_norm,
-            fit_pipe_mask_ratio=mask_ratio
+            node_static_norm=node_static_norm,
+            edge_static_norm=edge_static_norm,
+            fit_pipe_mask_ratio=mask_ratio,
+            need_fit=need_fit
         )
         main_dataset = EST_MAE_Dataset(dataset.processed_data_list, window_size=6)
         train_loader , val_loader , test_loader = main_dataset.gen_train_loader(batch_size=batch_size)
@@ -259,6 +270,30 @@ def load_data(data_name , data_path, hr ,batch_size , mask_ratio=0.2):
     
     return train_loader , val_loader , test_loader , pressure_norm , flow_norm
 
+
+def load_multigraph_data(data_name , data_path, hr ,batch_size , mask_ratio=0.2):
+    pressure_norm = LogZScoreNormalizer()
+    flow_norm = LogZScoreNormalizer()
+    if data_name == "MultiGraphPretrainDataset":
+        raw_data_list = []
+        for data in data_path:
+            epa = EpytHelper(data , hr)
+            raw_data_list.append(epa.get_raw_data())
+            epa.destroy()
+        dataset = MultiGraphPretrainDataset(
+            list_of_raw_data=raw_data_list,
+            fit_ratio=1.0,
+            fit_node_mask_ratio=mask_ratio,
+            pressure_norm=pressure_norm,
+            flow_norm=flow_norm,
+            fit_pipe_mask_ratio=mask_ratio
+        )
+        train_loader , val_loader , test_loader = dataset.gen_train_loader(batch_size=batch_size)
+    else:
+        raise ValueError(f"Unknown dataset name: {data_name}")
+    
+    return train_loader , val_loader , test_loader , pressure_norm , flow_norm , dataset.node_static_norm , dataset.edge_static_norm
+
 def prepare_training_env(ckpt_path , data_path , hr , mask_ratio=0.2):
     model , optimizers = load_model("EST_MAE_v5",ckpt_path)
 
@@ -275,7 +310,7 @@ def prepare_training_env(ckpt_path , data_path , hr , mask_ratio=0.2):
     #     cooldown=5,          # 降低学习率后，冷却5个epoch再重新开始监控
     #     min_lr=1e-7          # 学习率的下限
     # )    
-    train_loader , val_loader , test_loader , pressure_norm , flow_norm = load_data("PretrainDataset_ET" , data_path , hr , 1 , mask_ratio)
+    train_loader , val_loader , test_loader , pressure_norm , flow_norm = load_data("PretrainDataset_ET" , data_path , hr , 1 , mask_ratio=mask_ratio)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)

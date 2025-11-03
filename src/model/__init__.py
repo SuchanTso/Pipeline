@@ -8,3 +8,5 @@ from .layers import *
 from .EST_MAE import *
 # from .EST_GEN_MAE import *
 # from .Consistency_Model import *
+
+from .Consistency_Model import *
